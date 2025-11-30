@@ -63,13 +63,15 @@ Protected Class XRechnung
 
 	#tag Method, Flags = &h21
 		Private Function ExtractBlocksWithNS(xmlText As String, blockTag As String) As String()
+		  // Extract an entire block from the XML <prefix:XYZ>  ... other sub-elements ... </pefix:XYZ>
+		  
 		  Var results() As String
-		  Var prefixes() As String = Array("", "cbc:", "cac:")
+		  Var prefixes() As String = Array("", "cbc:", "cac:", "ram:", "udt:", "rsm:")
 		  
 		  For Each prefix As String In prefixes
 		    Var startPos As Integer = 1
 		    While startPos <= xmlText.Len
-		      Var openTag As String = "<" + prefix + blockTag
+		      Var openTag As String = "<" + prefix + blockTag + ">"
 		      Var closeTag As String = "</" + prefix + blockTag + ">"
 		      Dim s As Integer = xmlText.InStr(startPos, openTag)
 		      If s = 0 Then Exit
@@ -93,7 +95,7 @@ Protected Class XRechnung
 	#tag Method, Flags = &h21
 		Private Function ExtractTagFromBlockWithNS(blockContent As String, tagName As String) As String
 		  // Search for <anyprefix:tagName> or <tagName>
-		  Var prefixes() As String = Array("", "cbc:", "cac:")
+		  Var prefixes() As String = Array("", "cbc:", "cac:", "ram:", "udt:", "rsm:")
 		  
 		  For Each prefix As String In prefixes
 		    Var startTag As String = "<" + prefix + tagName
@@ -278,8 +280,8 @@ Protected Class XRechnung
 		    Return True
 		    
 		  Case "CII"
-		    MessageBox("CII detected. Currently only UBL is supported.")
-		    Return False
+		    ParseCII(xmlText)
+		    Return True
 		    
 		  Case Else
 		    MessageBox("This file is not a valid XRechnung (UBL or CII).")
@@ -290,7 +292,82 @@ Protected Class XRechnung
 	#tag EndMethod
 
 	#tag Method, Flags = &h0
+		Sub ParseCII(xmlText As String)
+		  // Parse CII (Cross Industry Invoice) schema
+		  
+		  Var exchangedBlocks() As String = ExtractBlocksWithNS(xmlText, "ExchangedDocument")
+		  If exchangedBlocks.Ubound >= 0 Then
+		    Var e As String = exchangedBlocks(0)
+		    
+		    Header.InvoiceNumber = ExtractTagFromBlockWithNS(e, "ID")
+		    Header.InvoiceTypeCode = ExtractFirstTag(e, "TypeCode")
+		    Header.InvoiceDate = ExtractTagFromBlockWithNS(e, "DateTimeString")
+		  End If
+		  
+		  Header.CurrencyCode = ExtractFirstTag(xmlText, "InvoiceCurrencyCode")
+		  
+		  Header.TaxExclusiveAmount = ExtractFirstTag(xmlText, "TaxBasisTotalAmount")
+		  Header.TaxInclusiveAmount = ExtractFirstTag(xmlText, "GrandTotalAmount")
+		  Header.PrepaidAmount      = ExtractFirstTag(xmlText, "TotalPrepaidAmount")
+		  Header.PayableAmount      = ExtractFirstTag(xmlText, "DuePayableAmount")
+		  
+		  ' Payment Temrns
+		  Var payBlocks() As String = ExtractBlocksWithNS(xmlText, "SpecifiedTradePaymentTerms")
+		  If payBlocks.Ubound >= 0 Then
+		    Header.PaymentNote = ExtractTagFromBlockWithNS(payBlocks(0), "Description")
+		  End If
+		  
+		  ' Seler Trade Party (Lieferant)
+		  Var sellerBlocks() As String = ExtractBlocksWithNS(xmlText, "SellerTradeParty")
+		  If sellerBlocks.Ubound >= 0 Then
+		    Var s As String = sellerBlocks(0)
+		    
+		    Header.SupplierName  = ExtractTagFromBlockWithNS(s, "Name")
+		    Header.SupplierStreet = ExtractTagFromBlockWithNS(s, "LineOne")
+		    Header.SupplierZip = ExtractTagFromBlockWithNS(s, "PostcodeCode")
+		    Header.SupplierCity = ExtractTagFromBlockWithNS(s, "CityName")
+		    Header.SupplierPhone = ExtractTagFromBlockWithNS(s, "CompleteNumber")
+		    Header.SupplierMail  = ExtractTagFromBlockWithNS(s, "URIID")
+		  End If
+		  
+		  ' Customer (Kunde)
+		  Var buyerBlocks() As String = ExtractBlocksWithNS(xmlText, "BuyerTradeParty")
+		  If buyerBlocks.Ubound >= 0 Then
+		    Var b As String = buyerBlocks(0)
+		    
+		    Header.CustomerName = ExtractTagFromBlockWithNS(b, "Name")
+		    Header.CustomerStreet = ExtractTagFromBlockWithNS(b, "LineOne")
+		    Header.CustomerZip = ExtractTagFromBlockWithNS(b, "PostcodeCode")
+		    Header.CustomerCity = ExtractTagFromBlockWithNS(b, "CityName")
+		  End If
+		  
+		  ' Invoice lines
+		  Var itemBlocks() As String = ExtractBlocksWithNS(xmlText, "IncludedSupplyChainTradeLineItem")
+		  ReDim Lines(-1)
+		  
+		  For Each block As String In itemBlocks
+		    Var ln As New InvoiceLine
+		    
+		    
+		    ln.Description = ExtractTagFromBlockWithNS(block, "Name")
+		    
+		    ln.Quantity = ExtractTagFromBlockWithNS(block, "BilledQuantity")
+		    ln.UnitCode = ExtractAttribute(block, "BilledQuantity", "unitCode")
+		    
+		    ln.Price = ExtractTagFromBlockWithNS(block, "ChargeAmount")
+		    ln.Amount = ExtractTagFromBlockWithNS(block, "LineTotalAmount")
+		    
+		    ln.VatPercent = ExtractTagFromBlockWithNS(block, "RateApplicablePercent")
+		    
+		    Lines.Add(ln)
+		  Next
+		  
+		End Sub
+	#tag EndMethod
+
+	#tag Method, Flags = &h0
 		Sub ParseUBL(xmlText As String)
+		  // Parse UBL (Universal Business Language) schema
 		  
 		  Header.InvoiceNumber = ExtractFirstTag(xmlText, "ID")
 		  Header.InvoiceDate = ExtractFirstTag(xmlText, "IssueDate")
@@ -303,7 +380,7 @@ Protected Class XRechnung
 		  Header.PrepaidAmount = ExtractFirstTag(xmlText, "PrepaidAmount")
 		  Header.PayableAmount = ExtractFirstTag(xmlText, "PayableAmount")
 		  
-		  ' Supplier
+		  ' Supplier (Lieferant)
 		  Var supBlocks() As String = ExtractBlocksWithNS(xmlText, "AccountingSupplierParty")
 		  If supBlocks.Ubound >= 0 Then
 		    Var b As String = supBlocks(0)
@@ -315,7 +392,7 @@ Protected Class XRechnung
 		    Header.SupplierMail = ExtractTagFromBlockWithNS(b, "ElectronicMail")
 		  End If
 		  
-		  ' Customer
+		  ' Customer (Kunde)
 		  Var cusBlocks() As String = ExtractBlocksWithNS(xmlText, "AccountingCustomerParty")
 		  If cusBlocks.Ubound >= 0 Then
 		    Var b As String = cusBlocks(0)
@@ -371,7 +448,7 @@ Protected Class XRechnung
 	#tag EndNote
 
 	#tag Note, Name = ToDo
-		- Add parsing of the CII format 
+		- Improve parsing
 		- Multilingual Support
 		
 	#tag EndNote
@@ -436,16 +513,8 @@ Protected Class XRechnung
 			Visible=false
 			Group="Behavior"
 			InitialValue=""
-			Type="Integer"
-			EditorType=""
-		#tag EndViewProperty
-		#tag ViewProperty
-			Name="Header"
-			Visible=false
-			Group="Behavior"
-			InitialValue=""
-			Type="Integer"
-			EditorType=""
+			Type="String"
+			EditorType="MultiLineEditor"
 		#tag EndViewProperty
 	#tag EndViewBehavior
 End Class
